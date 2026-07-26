@@ -46,13 +46,11 @@ logger.debug("Config loaded", extra=config)
 if chunk_overlap >= chunk_size:
     raise ValueError("chunk_overlap must be less than chunk_size")
 
-if "API_KEY" not in os.environ:
-    logger.critical("environment variable API_KEY missing")
-    raise OSError("No api key found at environment variable API_KEY.")
-
 if "OPENAI_API_KEY" not in os.environ:
     logger.critical("environment variable OPENAI_API_KEY missing")
-    raise OSError("No api key found at environment variable OPENAI_API_KEY.")
+
+if "API_KEY" not in os.environ:
+    logger.critical("environment variable API_KEY missing")
 
 openai_client = openai.OpenAI(
     base_url=base_url,
