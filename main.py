@@ -48,13 +48,16 @@ if chunk_overlap >= chunk_size:
 
 if "OPENAI_API_KEY" not in os.environ:
     logger.critical("environment variable OPENAI_API_KEY missing")
+    openai_api_key = "missing"
+else:
+    openai_api_key = os.environ["OPENAI_API_KEY"]
 
 if "API_KEY" not in os.environ:
     logger.critical("environment variable API_KEY missing")
 
 openai_client = openai.OpenAI(
     base_url=base_url,
-    api_key = os.environ["OPENAI_API_KEY"],
+    api_key = openai_api_key,
     timeout=openai_timeout,
 )
 
