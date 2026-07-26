@@ -6,11 +6,15 @@ import openai
 import logging
 import time
 import copy
+import uvicorn
 from fastapi import FastAPI, HTTPException, status, Depends
 from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from pythonjsonlogger.json import JsonFormatter
+from models import Document, IngestionResponse, Query, QueryResponse, HealthSummary
+from dotenv import load_dotenv
+
+load_dotenv()
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -42,41 +46,19 @@ logger.debug("Config loaded", extra=config)
 if chunk_overlap >= chunk_size:
     raise ValueError("chunk_overlap must be less than chunk_size")
 
-openai_api_key = os.environ.get("OPENAI_API_KEY")
-api_key = os.environ.get("API_KEY")
-
-if openai_api_key is None:
-    logger.critical("environment variable OPENAI_API_KEY missing")
-    raise OSError("No api key found at environment variable OPENAI_API_KEY.")
-
-if api_key is None:
+if "API_KEY" not in os.environ:
     logger.critical("environment variable API_KEY missing")
     raise OSError("No api key found at environment variable API_KEY.")
 
+if "OPENAI_API_KEY" not in os.environ:
+    logger.critical("environment variable OPENAI_API_KEY missing")
+    raise OSError("No api key found at environment variable OPENAI_API_KEY.")
+
 openai_client = openai.OpenAI(
     base_url=base_url,
-    api_key = openai_api_key,
+    api_key = os.environ["OPENAI_API_KEY"],
     timeout=openai_timeout,
 )
-
-class Document(BaseModel):
-    text: str
-
-class IngestionResponse(BaseModel):
-    document_id: str
-    num_chunks: int
-    status: str
-
-class Query(BaseModel):
-    chat: list[dict[str, str]]
-
-class QueryResponse(BaseModel):
-    chat: list[dict[str, str]]
-    chunks_used: int
-
-class HealthSummary(BaseModel):
-    server_status: str
-    chroma_status: str
 
 app = FastAPI()
 
@@ -105,13 +87,15 @@ logger.info("Server started")
 @app.post("/documents", response_model=IngestionResponse, status_code=status.HTTP_201_CREATED)
 def ingest(document: Document, key: str=Depends(header_scheme)):
     start_time = time.perf_counter()
-    if key != api_key:
+    if key != os.environ["API_KEY"]:
         logger.warning("Invalid API key received")
         raise HTTPException(401, "Invalid or missing api key")
     text = document.text
     if len(text) > max_ingestion_characters:
+        logger.warning("Document exceeds character limit", extra={"document_length": len(text), "max_ingestion_characters": max_ingestion_characters})
         raise HTTPException(422, f"Document exceeds character limit ({max_ingestion_characters})")
     if text.strip() == "":
+        logger.warning("Document is empty or whitespace")
         raise HTTPException(422, "Document is empty or whitespace")
     chunks = []
     for i in range(0, len(text), chunk_size-chunk_overlap):
@@ -124,6 +108,7 @@ def ingest(document: Document, key: str=Depends(header_scheme)):
             if distance < duplicate_similarity_threshold:
                 duplicate_chunks += 1
     if duplicate_chunks > max_duplicate_chunks:
+        logger.warning("Duplicate document detected", extra={"duplicate_chunks": duplicate_chunks, "max_duplicate_chunks": max_duplicate_chunks})
         raise HTTPException(422, "Duplicate document detected")
     document_id = str(uuid.uuid4())
     collection.add(
@@ -138,11 +123,10 @@ def ingest(document: Document, key: str=Depends(header_scheme)):
         "status": "ingested",
     }
 
-
 @app.post("/query", response_model=QueryResponse, status_code=status.HTTP_200_OK)
 def query(query: Query, key: str=Depends(header_scheme)):
     start_time = time.perf_counter()
-    if key != api_key:
+    if key != os.environ["API_KEY"]:
         logger.warning("Invalid or missing API key received")
         raise HTTPException(401, "Invalid or missing api key")
     chat = query.chat
@@ -183,8 +167,8 @@ def query(query: Query, key: str=Depends(header_scheme)):
     except openai.APITimeoutError:
         logger.warning("openai timeout exceeded")
         raise HTTPException(504, f"openai timeout exceeded ({openai_timeout} secs)")
-    except Exception:
-        logger.error("openai call failed for unknown reason")
+    except Exception as e:
+        logger.error(f"openai call failed: {e}")
         raise HTTPException(503, f"Unknown problem with openai or {base_url}")
     logger.info("Query handled", extra={"chunks_used": len(context_chunks), "latency": time.perf_counter()-start_time})
     chat.append({"role": "assistant", "content": response.choices[0].message.content})
@@ -206,3 +190,6 @@ def get_health():
         "server_status": "ok",
         "chroma_status": chroma_status
     }
+
+if __name__ == '__main__':
+    uvicorn.run(app)
